@@ -139,7 +139,7 @@ public final class PlayerLoginListener {
               String serverDisplayName = serverNameMappings.getOrDefault(serverId, serverId);
               String logoutMessage =
                   String.format(
-                      "\uD83D\uDD34 玩家 [%s] 已离线。%s- IP地址: %s%s- 所在服务器: %s%s- 在线时长: %s%s- 离线原因: %s",
+                      "\uD83D\uDD34 玩家 [%s] 已下线%s- IP地址: %s%s- 所在服务器: %s%s- 在线时长: %s%s- 离线原因: %s",
                       player.getUsername(),
                       "\n",
                       player.getRemoteAddress().getAddress().getHostAddress(),
