@@ -1,0 +1,10 @@
+{
+  "id": "steward-activity-velocity",
+  "name": "Steward Activity",
+  "version": "${project.version}",
+  "description": "记录玩家登录并通过机器人发送日报/月报",
+  "authors": [
+    "MochaMousse"
+  ],
+  "main": "cc.mousse.steward.activity.Main"
+}

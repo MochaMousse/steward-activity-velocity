@@ -1,0 +1,27 @@
+# 数据库连接设置
+database:
+  host: "127.0.0.1"
+  port: 3306
+  database: "steward_activity"
+  username: "root"
+  password: "root"
+  extra-params: "?useUnicode=true&characterEncoding=utf8"
+
+# go-cqhttp设置
+go-cqhttp:
+  # velocity ID
+  proxy-id: "0"
+  # 服务器名称映射
+  server-name-mappings:
+    oldtimes: "🕰️旧时光俱乐部"
+    mousse: "🍰慕斯小镇"
+  # 机器人HTTP API地址
+  url: "http://127.0.0.1:12345"
+  groups:
+    # 用于发送日志和详细报告的群
+    log-group-id: 111111111
+    # 玩家社群
+    community-group-id: 222222222
+  reports:
+    # 是否将日报/月报也发送到玩家社群
+    send-to-community-group: true
