@@ -6,6 +6,7 @@ import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -33,6 +34,10 @@ public final class PlayerLoginListener {
 
   /** 用于缓存下线原因 */
   private final Map<UUID, String> kickReasonsCache = new ConcurrentHashMap<>();
+
+  /** 用于实时追踪玩家所在的最后一个服务器 */
+  private final ConcurrentMap<UUID, RegisteredServer> lastKnownServerCache =
+      new ConcurrentHashMap<>();
 
   public PlayerLoginListener(Main plugin) {
     this.plugin = plugin;
@@ -68,6 +73,7 @@ public final class PlayerLoginListener {
     LocalDateTime loginDateTime = LocalDateTime.ofInstant(loginInstant, Main.SHANGHAI_ZONE);
     String serverId = event.getServer().getServerInfo().getName();
     String proxyId = plugin.getConfig().getGoCqhttp().getProxyId();
+    lastKnownServerCache.put(playerUuid, event.getServer());
     // 异步写入数据库
     databaseManager
         .logPlayerLoginAndGetIdAsync(
@@ -92,10 +98,19 @@ public final class PlayerLoginListener {
             plugin,
             () -> {
               String serverDisplayName = serverNameMappings.getOrDefault(serverId, serverId);
+              int serverPlayerCount = event.getServer().getPlayersConnected().size();
+              int totalPlayerCount = plugin.getServer().getPlayerCount();
               String loginMessage =
                   String.format(
-                      "\uD83D\uDFE2 玩家 [%s] 已上线%s- IP地址: %s%s- 服务器: %s",
-                      username, "\n", ipAddress, "\n", serverDisplayName);
+                      "\uD83D\uDFE2 玩家 [%s] 已上线%s- IP地址: %s%s- 服务器: %s%s- 在线人数: %d | %d",
+                      username,
+                      "\n",
+                      ipAddress,
+                      "\n",
+                      serverDisplayName,
+                      "\n",
+                      serverPlayerCount,
+                      totalPlayerCount);
               reportManager.sendAdminNotification(loginMessage);
             })
         .schedule();
@@ -110,6 +125,7 @@ public final class PlayerLoginListener {
     // 从缓存中获取并移除该玩家的会话ID和登录时间
     Long recordId = activeSessionIds.remove(playerUuid);
     Instant loginTime = loginTimestamps.remove(playerUuid);
+    RegisteredServer lastServer = lastKnownServerCache.remove(playerUuid);
     if (recordId == null || loginTime == null) {
       // 如果缓存中没有该玩家说明可能是在登录完成前就断开了或服务器重启过
       // 这种不完整的会话我们不作处理
@@ -118,8 +134,6 @@ public final class PlayerLoginListener {
     //  获取所有登出时需要的数据
     long durationMs = Duration.between(loginTime, disconnectInstant).toMillis();
     LocalDateTime logoutDateTime = LocalDateTime.ofInstant(disconnectInstant, Main.SHANGHAI_ZONE);
-    String serverId =
-        player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse("unknown");
     String reason;
     // 优先检查他是不是刚刚被踢出了
     // 检查并移除
@@ -138,10 +152,21 @@ public final class PlayerLoginListener {
         .buildTask(
             plugin,
             () -> {
-              String serverDisplayName = serverNameMappings.getOrDefault(serverId, serverId);
+              String serverDisplayName;
+              String serverPlayerCount;
+              if (lastServer != null && lastServer.getServerInfo() != null) {
+                // 如果能获取到最后所在的服务器信息
+                serverDisplayName = lastServer.getServerInfo().getName();
+                serverPlayerCount = String.valueOf(lastServer.getPlayersConnected().size());
+              } else {
+                // 如果获取不到
+                serverDisplayName = "unknown";
+                serverPlayerCount = "-";
+              }
+              int totalPlayerCount = plugin.getServer().getPlayerCount();
               String logoutMessage =
                   String.format(
-                      "\uD83D\uDD34 玩家 [%s] 已下线%s- IP地址: %s%s- 服务器: %s%s- 在线时长: %s%s- 离线原因: %s",
+                      "\uD83D\uDD34 玩家 [%s] 已下线%s- IP地址: %s%s- 服务器: %s%s- 在线时长: %s%s- 离线原因: %s%s- 在线人数: %s | %d",
                       player.getUsername(),
                       "\n",
                       player.getRemoteAddress().getAddress().getHostAddress(),
@@ -150,7 +175,10 @@ public final class PlayerLoginListener {
                       "\n",
                       formatDuration(durationMs),
                       "\n",
-                      reason);
+                      reason,
+                      "\n",
+                      serverPlayerCount,
+                      totalPlayerCount);
               reportManager.sendAdminNotification(logoutMessage);
             })
         .schedule();
