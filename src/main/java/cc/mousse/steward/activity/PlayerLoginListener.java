@@ -10,6 +10,7 @@ import com.velocitypowered.api.proxy.server.RegisteredServer;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -98,11 +99,15 @@ public final class PlayerLoginListener {
             plugin,
             () -> {
               String serverDisplayName = serverNameMappings.getOrDefault(serverId, serverId);
-              int serverPlayerCount = event.getServer().getPlayersConnected().size();
+              Collection<Player> playersOnServer = event.getServer().getPlayersConnected();
+              int serverPlayerCount =
+                  playersOnServer.contains(player)
+                      ? playersOnServer.size()
+                      : (playersOnServer.size() + 1);
               int totalPlayerCount = plugin.getServer().getPlayerCount();
               String loginMessage =
                   String.format(
-                      "\uD83D\uDFE2 玩家 [%s] 已上线%s- IP地址: %s%s- 服务器: %s%s- 在线人数: %d | %d",
+                      "⬆️ 玩家 [%s] 已上线%s- IP地址: %s%s- 服务器: %s%s- 在线人数: %d / %d",
                       username,
                       "\n",
                       ipAddress,
@@ -156,7 +161,8 @@ public final class PlayerLoginListener {
               String serverPlayerCount;
               if (lastServer != null && lastServer.getServerInfo() != null) {
                 // 如果能获取到最后所在的服务器信息
-                serverDisplayName = lastServer.getServerInfo().getName();
+                String serverId = lastServer.getServerInfo().getName();
+                serverDisplayName = serverNameMappings.getOrDefault(serverId, serverId);
                 serverPlayerCount = String.valueOf(lastServer.getPlayersConnected().size());
               } else {
                 // 如果获取不到
@@ -166,7 +172,7 @@ public final class PlayerLoginListener {
               int totalPlayerCount = plugin.getServer().getPlayerCount();
               String logoutMessage =
                   String.format(
-                      "\uD83D\uDD34 玩家 [%s] 已下线%s- IP地址: %s%s- 服务器: %s%s- 在线时长: %s%s- 离线原因: %s%s- 在线人数: %s | %d",
+                      "⬇️ 玩家 [%s] 已下线%s- IP地址: %s%s- 服务器: %s%s- 在线时长: %s%s- 离线原因: %s%s- 在线人数: %s / %d",
                       player.getUsername(),
                       "\n",
                       player.getRemoteAddress().getAddress().getHostAddress(),
