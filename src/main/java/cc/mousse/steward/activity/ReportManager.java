@@ -4,10 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.velocitypowered.api.scheduler.Scheduler;
 import java.io.IOException;
-import java.time.Duration;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
+import java.time.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import okhttp3.*;
@@ -19,9 +16,10 @@ import org.slf4j.Logger;
  * @author MochaMousse
  */
 public final class ReportManager {
-  // 安全的消息最大长度, 用于QQ消息自动分片
+  /** 安全的消息最大长度, 用于QQ消息自动分片 */
   private static final int MAX_MESSAGE_LENGTH = 1800;
 
+  private static final String UNKNOWN_SERVER = "unknown";
   private final Gson gson;
   private final Main plugin;
   private final Logger logger;
@@ -49,14 +47,14 @@ public final class ReportManager {
   /** 命令触发生成并仅发送日报到日志群 */
   public void sendDailyReportToLogGroup() {
     logger.info("命令触发生成日报");
-    LocalDate today = LocalDate.now();
+    LocalDate today = LocalDateTime.now(Main.SHANGHAI_ZONE).toLocalDate();
     // 从今天凌晨开始
-    LocalDateTime startTime = today.atStartOfDay();
+    LocalDateTime startOfDay = today.atStartOfDay();
     // 到当前时刻结束
-    LocalDateTime endTime = LocalDateTime.now();
+    LocalDateTime endTime = LocalDateTime.now(Main.SHANGHAI_ZONE);
     String title = String.format("%s 当日实时日报", today);
     databaseManager
-        .queryDetailedSessionDataAsync(startTime, endTime)
+        .queryDetailedSessionDataAsync(startOfDay, endTime)
         .thenAcceptAsync(
             sessionList -> {
               if (sessionList == null || sessionList.isEmpty()) {
@@ -64,7 +62,8 @@ public final class ReportManager {
                 sendAdminNotification(String.format("🗓️ %s 🗓️%s今日暂无玩家活动记录", title, "\n\n"));
                 return;
               }
-              List<PlayerStats> playerStatsList = aggregateStats(sessionList, false);
+              List<PlayerStats> playerStatsList =
+                  aggregateStats(sessionList, false, startOfDay, endTime);
               List<String> detailedMessages = formatDetailedReport(title, playerStatsList, false);
               sendBatchedMessages(detailedMessages, cqHttpConfig.getGroups().getLogGroupId());
             });
@@ -73,15 +72,15 @@ public final class ReportManager {
   /** 命令触发生成并仅发送月报到日志群 */
   public void sendMonthlyReportToLogGroup() {
     logger.info("命令触发生成月报");
-    LocalDate thisMonthDate = LocalDate.now();
+    LocalDate thisMonthDate = LocalDateTime.now(Main.SHANGHAI_ZONE).toLocalDate();
     // 从本月第一天凌晨开始
-    LocalDateTime startTime = thisMonthDate.withDayOfMonth(1).atStartOfDay();
+    LocalDateTime startOfMonth = thisMonthDate.withDayOfMonth(1).atStartOfDay();
     // 到当前时刻结束
-    LocalDateTime endTime = LocalDateTime.now();
+    LocalDateTime endTime = LocalDateTime.now(Main.SHANGHAI_ZONE);
     String title =
         String.format("%d年%d月 实时月报", thisMonthDate.getYear(), thisMonthDate.getMonthValue());
     databaseManager
-        .queryDetailedSessionDataAsync(startTime, endTime)
+        .queryDetailedSessionDataAsync(startOfMonth, endTime)
         .thenAcceptAsync(
             sessionList -> {
               if (sessionList == null || sessionList.isEmpty()) {
@@ -89,7 +88,8 @@ public final class ReportManager {
                 sendAdminNotification(String.format("🗓️ %s 🗓️%s本月暂无玩家活动记录", title, "\n\n"));
                 return;
               }
-              List<PlayerStats> playerStatsList = aggregateStats(sessionList, true);
+              List<PlayerStats> playerStatsList =
+                  aggregateStats(sessionList, true, startOfMonth, endTime);
               List<String> detailedMessages = formatDetailedReport(title, playerStatsList, true);
               sendBatchedMessages(detailedMessages, cqHttpConfig.getGroups().getLogGroupId());
             });
@@ -97,16 +97,19 @@ public final class ReportManager {
 
   public void generateAndDispatchDailyReport() {
     logger.info("开始生成日报");
-    LocalDate yesterday = LocalDate.now().minusDays(1);
+    LocalDate yesterday = LocalDateTime.now(Main.SHANGHAI_ZONE).toLocalDate().minusDays(1);
+    LocalDateTime startOfDay = yesterday.atStartOfDay();
+    LocalDateTime endOfDay = yesterday.atTime(LocalTime.MAX);
     databaseManager
-        .queryDetailedSessionDataAsync(yesterday.atStartOfDay(), yesterday.atTime(LocalTime.MAX))
+        .queryDetailedSessionDataAsync(startOfDay, endOfDay)
         .thenAcceptAsync(
             sessionList -> {
               if (sessionList.isEmpty()) {
                 logger.info("昨日无玩家在线数据");
                 return;
               }
-              List<PlayerStats> playerStatsList = aggregateStats(sessionList, false);
+              List<PlayerStats> playerStatsList =
+                  aggregateStats(sessionList, false, startOfDay, endOfDay);
               List<String> detailedMessages =
                   formatDetailedReport(
                       String.format("%s 服务器详细日报", yesterday), playerStatsList, false);
@@ -118,7 +121,7 @@ public final class ReportManager {
 
   public void generateAndDispatchMonthlyReport() {
     logger.info("开始生成月报");
-    LocalDate lastMonth = LocalDate.now().minusMonths(1);
+    LocalDate lastMonth = LocalDateTime.now(Main.SHANGHAI_ZONE).toLocalDate().minusMonths(1);
     LocalDateTime startOfMonth = lastMonth.withDayOfMonth(1).atStartOfDay();
     LocalDateTime endOfMonth =
         lastMonth.withDayOfMonth(lastMonth.lengthOfMonth()).atTime(LocalTime.MAX);
@@ -130,7 +133,8 @@ public final class ReportManager {
                 logger.info("上月无玩家在线数据");
                 return;
               }
-              List<PlayerStats> playerStatsList = aggregateStats(sessionList, true);
+              List<PlayerStats> playerStatsList =
+                  aggregateStats(sessionList, true, startOfMonth, endOfMonth);
               List<String> detailedMessages =
                   formatDetailedReport(
                       String.format(
@@ -146,31 +150,74 @@ public final class ReportManager {
             });
   }
 
+  /**
+   * 核心聚合逻辑
+   *
+   * @param sessions 从数据库获取的原始会话列表
+   * @param isMonthly 是否为月报
+   * @param reportStart 报告的开始时间
+   * @param reportEnd 报告的结束时间
+   * @return 聚合统计后的玩家列表
+   */
   private List<PlayerStats> aggregateStats(
-      List<DatabaseManager.PlayerSessionData> sessions, boolean isMonthly) {
-    Map<String, PlayerStats> statsMap = new HashMap<>();
-    Map<String, Set<LocalDate>> activeDaysMap = isMonthly ? new HashMap<>() : null;
-    for (DatabaseManager.PlayerSessionData session : sessions) {
-      PlayerStats playerStats =
-          statsMap.computeIfAbsent(session.uuid(), k -> new PlayerStats(session.username()));
-      playerStats.totalDurationMs += session.durationMilliseconds();
-      playerStats.totalLoginCount++;
-      ServerStats serverStats =
-          playerStats.perServerStats.computeIfAbsent(session.serverName(), k -> new ServerStats());
-      serverStats.durationMs += session.durationMilliseconds();
-      serverStats.loginCount++;
-      if (isMonthly) {
-        activeDaysMap
-            .computeIfAbsent(session.uuid(), k -> new HashSet<>())
-            .add(session.loginTimestamp().toLocalDate());
-      }
+      List<DatabaseManager.PlayerSessionData> sessions,
+      boolean isMonthly,
+      LocalDateTime reportStart,
+      LocalDateTime reportEnd) {
+    Map<String, PlayerStats> statsMap = new HashMap<>(8);
+    Map<String, Set<LocalDate>> activeDaysMap = isMonthly ? new HashMap<>(8) : null;
+    for (var session : sessions) {
+      processSingleSession(session, statsMap, activeDaysMap, isMonthly, reportStart, reportEnd);
     }
+    // 在所有会話都处理完毕后再统一计算每个玩家最终的活跃天数
     if (isMonthly) {
-      statsMap.forEach((uuid, stats) -> stats.activeDays = activeDaysMap.get(uuid).size());
+      statsMap.forEach(
+          (uuid, stats) ->
+              stats.activeDays = activeDaysMap.getOrDefault(uuid, Collections.emptySet()).size());
     }
+    // 按总时长倒序排序并返回
     return statsMap.values().stream()
         .sorted(Comparator.comparingLong(s -> -s.totalDurationMs))
         .toList();
+  }
+
+  /** 负责处理单条会话记录的所有复杂计算和聚合逻辑。 */
+  private void processSingleSession(
+      DatabaseManager.PlayerSessionData session,
+      Map<String, PlayerStats> statsMap,
+      Map<String, Set<LocalDate>> activeDaysMap,
+      boolean isMonthly,
+      LocalDateTime reportStart,
+      LocalDateTime reportEnd) {
+    PlayerStats playerStats =
+        statsMap.computeIfAbsent(session.uuid(), k -> new PlayerStats(session.username()));
+    // 计算会话与报告周期的交集时长
+    LocalDateTime sessionStart = session.loginTimestamp();
+    LocalDateTime sessionEnd =
+        (session.logoutTimestamp() == null) ? reportEnd : session.logoutTimestamp();
+    LocalDateTime effectiveStart = sessionStart.isAfter(reportStart) ? sessionStart : reportStart;
+    LocalDateTime effectiveEnd = sessionEnd.isBefore(reportEnd) ? sessionEnd : reportEnd;
+    long durationForThisReport =
+        Math.max(0, Duration.between(effectiveStart, effectiveEnd).toMillis());
+    // 聚合数据
+    playerStats.totalDurationMs += durationForThisReport;
+    playerStats.totalLoginCount++;
+    ServerStats serverStats =
+        playerStats.perServerStats.computeIfAbsent(
+            session.serverName() != null ? session.serverName() : UNKNOWN_SERVER,
+            k -> new ServerStats());
+    serverStats.durationMs += durationForThisReport;
+    serverStats.loginCount++;
+    // 如果是月报记录活跃天数
+    if (isMonthly) {
+      Set<LocalDate> playerActiveDays =
+          activeDaysMap.computeIfAbsent(session.uuid(), k -> new HashSet<>());
+      for (LocalDate date = effectiveStart.toLocalDate();
+          !date.isAfter(effectiveEnd.toLocalDate());
+          date = date.plusDays(1)) {
+        playerActiveDays.add(date);
+      }
+    }
   }
 
   private List<String> formatDetailedReport(
@@ -197,7 +244,7 @@ public final class ReportManager {
           .sorted(Map.Entry.comparingByKey())
           .forEach(
               entry -> {
-                String serverId = entry.getKey() != null ? entry.getKey() : "unknown";
+                String serverId = entry.getKey() != null ? entry.getKey() : UNKNOWN_SERVER;
                 String serverDisplayName = serverNameMappings.getOrDefault(serverId, serverId);
                 ServerStats serverStats = entry.getValue();
                 playerBlock
@@ -240,7 +287,7 @@ public final class ReportManager {
           .sorted(Map.Entry.comparingByKey())
           .forEach(
               entry -> {
-                String serverId = entry.getKey() != null ? entry.getKey() : "unknown";
+                String serverId = entry.getKey() != null ? entry.getKey() : UNKNOWN_SERVER;
                 String serverDisplayName = serverNameMappings.getOrDefault(serverId, serverId);
                 ServerStats serverStats = entry.getValue();
                 playerBlock
@@ -336,7 +383,8 @@ public final class ReportManager {
     if (milliseconds < 0) {
       return "0秒";
     }
-    if (milliseconds < 60000) {
+    long oneMinuteInMilliseconds = 60000;
+    if (milliseconds < oneMinuteInMilliseconds) {
       return String.format("%s秒", milliseconds / 1000);
     }
     long hours = TimeUnit.MILLISECONDS.toHours(milliseconds);
@@ -348,7 +396,7 @@ public final class ReportManager {
   }
 
   Duration calculateDelayUntil(LocalTime targetTime) {
-    LocalDateTime now = LocalDateTime.now();
+    LocalDateTime now = LocalDateTime.now(Main.SHANGHAI_ZONE);
     LocalDateTime nextRun = now.with(targetTime);
     if (now.isAfter(nextRun)) {
       nextRun = nextRun.plusDays(1);
@@ -356,7 +404,7 @@ public final class ReportManager {
     return Duration.between(now, nextRun);
   }
 
-  // 内部数据类, 用于在Java中聚合统计数据
+
   private static class ServerStats {
     Long durationMs = 0L;
     Integer loginCount = 0;

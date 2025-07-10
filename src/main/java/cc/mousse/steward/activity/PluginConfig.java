@@ -10,7 +10,6 @@ import org.spongepowered.configurate.objectmapping.meta.Comment;
  * @author MochaMousse
  */
 @Data
-// 告诉Configurate这个类可以被序列化/反序列化
 @ConfigSerializable
 public class PluginConfig {
   private DatabaseConfig database = new DatabaseConfig();

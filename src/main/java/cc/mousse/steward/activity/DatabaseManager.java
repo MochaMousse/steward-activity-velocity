@@ -15,14 +15,6 @@ import java.util.concurrent.CompletableFuture;
 public class DatabaseManager {
   private static final DateTimeFormatter DATE_TIME_FORMATTER =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
-  private static final String QUERY_DETAILED_SESSION_DATA_SQL =
-"""
-SELECT uuid, username, duration_milliseconds, initial_server_name, login_timestamp
-FROM player_sessions
-WHERE login_timestamp BETWEEN ? AND ?
-  AND duration_milliseconds IS NOT NULL
-  AND duration_milliseconds > 0;
-""";
   private final Main plugin;
   private final DruidDataSource dataSource;
 
@@ -91,7 +83,8 @@ WHERE login_timestamp BETWEEN ? AND ?
       plugin.getLogger().info("索引创建成功: {}", indexSql);
     } catch (SQLException e) {
       // MySQL错误码1061表示"Duplicate key name" (索引已存在)
-      if (e.getErrorCode() == 1061) {
+      int duplicateKeyErrorCode = 1061;
+      if (duplicateKeyErrorCode == e.getErrorCode()) {
         // 这是一个正常情况，表示索引已经就位，我们只需记录一下即可
         plugin.getLogger().info("索引已存在: {}", indexSql);
       } else {
@@ -119,7 +112,7 @@ WHERE login_timestamp BETWEEN ? AND ?
    * @param uuid 玩家的UUID
    * @param username 玩家当前的用户名
    * @param ipAddress 玩家的IP地址
-   * @param loginTimestampMs 登录时的UTC毫秒时间戳
+   * @param loginDateTime 登录时间
    * @param serverId 玩家首次进入的后端服务器ID
    * @param protocolVersion 玩家客户端的协议版本号
    * @param proxyId 当前Velocity代理实例的ID
@@ -129,7 +122,7 @@ WHERE login_timestamp BETWEEN ? AND ?
       String uuid,
       String username,
       String ipAddress,
-      long loginTimestampMs,
+      LocalDateTime loginDateTime,
       String serverId,
       int protocolVersion,
       String proxyId) {
@@ -144,7 +137,7 @@ WHERE login_timestamp BETWEEN ? AND ?
             ps.setString(2, username);
             ps.setString(3, ipAddress);
             // 将Java的毫秒时间戳转换为JDBC的Timestamp对象，以正确写入DATETIME(3)字段
-            ps.setTimestamp(4, new Timestamp(loginTimestampMs));
+            ps.setTimestamp(4, Timestamp.valueOf(loginDateTime));
             ps.setString(5, serverId);
             ps.setInt(6, protocolVersion);
             ps.setString(7, proxyId);
@@ -173,12 +166,12 @@ WHERE login_timestamp BETWEEN ? AND ?
    * 异步更新玩家的登出信息
    *
    * @param recordId 要更新的会话记录在数据库中的主键ID
-   * @param logoutTimestampMs 登出时的UTC毫秒时间戳
+   * @param logoutDateTime 登出时间
    * @param durationMs 这次会话的总持续时长 (毫秒)
    * @param reason 离线原因
    */
   public void updatePlayerLogoutAsync(
-      long recordId, long logoutTimestampMs, long durationMs, String reason) {
+      long recordId, LocalDateTime logoutDateTime, long durationMs, String reason) {
     // 使用 Velocity 的调度器来在独立的线程中异步执行数据库操作
     plugin
         .getServer()
@@ -190,7 +183,7 @@ WHERE login_timestamp BETWEEN ? AND ?
                   "UPDATE player_sessions SET logout_timestamp = ?, duration_milliseconds = ?, disconnect_reason = ? WHERE id = ?";
               try (Connection conn = getConnection();
                   PreparedStatement ps = conn.prepareStatement(sql)) {
-                ps.setTimestamp(1, new Timestamp(logoutTimestampMs));
+                ps.setTimestamp(1, Timestamp.valueOf(logoutDateTime));
                 ps.setLong(2, durationMs);
                 ps.setString(3, reason);
                 ps.setLong(4, recordId);
@@ -215,20 +208,28 @@ WHERE login_timestamp BETWEEN ? AND ?
     return CompletableFuture.supplyAsync(
         () -> {
           List<PlayerSessionData> results = new ArrayList<>();
-          // 选择需要的字段并过滤掉时长为空或为0的无效会话
+          // 这个查询逻辑会找出所有与[start, end]时间段有交集的会话
+          // 在时间段内开始的会话
+          // 在时间段内结束的会话
+          // 在时间段开始前开始, 在时间段结束后结束的会话
+          // 正在进行中且在时间段内开始的会话
+          String sql =
+              "SELECT uuid, username, duration_milliseconds, initial_server_name, login_timestamp, logout_timestamp FROM player_sessions WHERE login_timestamp < ? AND (logout_timestamp IS NULL OR logout_timestamp >= ?)";
           try (Connection conn = getConnection();
-              PreparedStatement ps = conn.prepareStatement(QUERY_DETAILED_SESSION_DATA_SQL)) {
-            ps.setString(1, start.format(DATE_TIME_FORMATTER));
-            ps.setString(2, end.format(DATE_TIME_FORMATTER));
+              PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, end.format(DATE_TIME_FORMATTER));
+            ps.setString(2, start.format(DATE_TIME_FORMATTER));
             try (ResultSet rs = ps.executeQuery()) {
               while (rs.next()) {
+                Timestamp logoutTs = rs.getTimestamp("logout_timestamp");
                 results.add(
                     new PlayerSessionData(
                         rs.getString("uuid"),
                         rs.getString("username"),
                         rs.getLong("duration_milliseconds"),
                         rs.getString("initial_server_name"),
-                        rs.getTimestamp("login_timestamp").toLocalDateTime()));
+                        rs.getTimestamp("login_timestamp").toLocalDateTime(),
+                        logoutTs != null ? logoutTs.toLocalDateTime() : null));
               }
             }
           } catch (SQLException e) {
@@ -243,7 +244,10 @@ WHERE login_timestamp BETWEEN ? AND ?
   public record PlayerSessionData(
       String uuid,
       String username,
+      // 对于已结束的会话
       Long durationMilliseconds,
       String serverName,
-      LocalDateTime loginTimestamp) {}
+      LocalDateTime loginTimestamp,
+      // 对于正在进行的会话会是null
+      LocalDateTime logoutTimestamp) {}
 }

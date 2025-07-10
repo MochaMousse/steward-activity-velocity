@@ -8,6 +8,7 @@ import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.proxy.Player;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -24,11 +25,13 @@ public final class PlayerLoginListener {
   private final DatabaseManager databaseManager;
   private final Map<String, String> serverNameMappings;
 
-  // 用于追踪当前在线玩家的会话信息
+  /** 用于追踪当前在线玩家的会话信息 */
   private final ConcurrentMap<UUID, Long> activeSessionIds = new ConcurrentHashMap<>();
-  // 用于计算在线时长
+
+  /** 用于计算在线时长 */
   private final ConcurrentMap<UUID, Instant> loginTimestamps = new ConcurrentHashMap<>();
-  // 用于缓存离开原因
+
+  /** 用于缓存下线原因 */
   private final Map<UUID, String> kickReasonsCache = new ConcurrentHashMap<>();
 
   public PlayerLoginListener(Main plugin) {
@@ -46,7 +49,7 @@ public final class PlayerLoginListener {
     loginTimestamps.put(event.getPlayer().getUniqueId(), Instant.now());
   }
 
-  /** 步骤2：==玩家成功连接到某个后端服务器。这是记录登录信息的最佳时机。 */
+  /** 家成功连接到某个后端服务器 */
   @Subscribe
   public void onServerConnected(ServerConnectedEvent event) {
     Player player = event.getPlayer();
@@ -58,18 +61,17 @@ public final class PlayerLoginListener {
       // 如果为null, 说明这不是首次连接 (比如玩家在服务器之间切换), 忽略
       return;
     }
-    // 现在可以安全地获取所有信息
     String uuid = playerUuid.toString();
     String username = player.getUsername();
     String ipAddress = player.getRemoteAddress().getAddress().getHostAddress();
-    long loginTimestampMs = loginInstant.toEpochMilli();
     int protocolVersion = player.getProtocolVersion().getProtocol();
+    LocalDateTime loginDateTime = LocalDateTime.ofInstant(loginInstant, Main.SHANGHAI_ZONE);
     String serverId = event.getServer().getServerInfo().getName();
     String proxyId = plugin.getConfig().getGoCqhttp().getProxyId();
     // 异步写入数据库
     databaseManager
         .logPlayerLoginAndGetIdAsync(
-            uuid, username, ipAddress, loginTimestampMs, serverId, protocolVersion, proxyId)
+            uuid, username, ipAddress, loginDateTime, serverId, protocolVersion, proxyId)
         .thenAcceptAsync(
             recordId -> {
               if (recordId != -1L) {
@@ -92,14 +94,14 @@ public final class PlayerLoginListener {
               String serverDisplayName = serverNameMappings.getOrDefault(serverId, serverId);
               String loginMessage =
                   String.format(
-                      "\uD83D\uDFE2 玩家 [%s] 已上线%s- IP地址: %s%s- 入口服务器: %s",
+                      "\uD83D\uDFE2 玩家 [%s] 已上线%s- IP地址: %s%s- 服务器: %s",
                       username, "\n", ipAddress, "\n", serverDisplayName);
               reportManager.sendAdminNotification(loginMessage);
             })
         .schedule();
   }
 
-  /** 处理玩家断开连接的事件。 */
+  /** 处理玩家断开连接的事件 */
   @Subscribe
   public void onDisconnect(DisconnectEvent event) {
     Player player = event.getPlayer();
@@ -115,7 +117,7 @@ public final class PlayerLoginListener {
     }
     //  获取所有登出时需要的数据
     long durationMs = Duration.between(loginTime, disconnectInstant).toMillis();
-    long logoutTimestampMs = disconnectInstant.toEpochMilli();
+    LocalDateTime logoutDateTime = LocalDateTime.ofInstant(disconnectInstant, Main.SHANGHAI_ZONE);
     String serverId =
         player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse("unknown");
     String reason;
@@ -128,7 +130,7 @@ public final class PlayerLoginListener {
       reason = "客户端主动断开";
     }
     // 异步更新数据库中的登出信息
-    databaseManager.updatePlayerLogoutAsync(recordId, logoutTimestampMs, durationMs, reason);
+    databaseManager.updatePlayerLogoutAsync(recordId, logoutDateTime, durationMs, reason);
     // 异步发送实时登出通知到日志群
     plugin
         .getServer()
@@ -139,7 +141,7 @@ public final class PlayerLoginListener {
               String serverDisplayName = serverNameMappings.getOrDefault(serverId, serverId);
               String logoutMessage =
                   String.format(
-                      "\uD83D\uDD34 玩家 [%s] 已下线%s- IP地址: %s%s- 所在服务器: %s%s- 在线时长: %s%s- 离线原因: %s",
+                      "\uD83D\uDD34 玩家 [%s] 已下线%s- IP地址: %s%s- 服务器: %s%s- 在线时长: %s%s- 离线原因: %s",
                       player.getUsername(),
                       "\n",
                       player.getRemoteAddress().getAddress().getHostAddress(),
@@ -173,7 +175,8 @@ public final class PlayerLoginListener {
       return "0秒";
     }
     long seconds = TimeUnit.MILLISECONDS.toSeconds(milliseconds);
-    if (seconds < 60) {
+    int oneMinuteInSeconds = 60;
+    if (seconds < oneMinuteInSeconds) {
       return String.format("%s秒", seconds);
     }
     long hours = TimeUnit.MILLISECONDS.toHours(milliseconds);

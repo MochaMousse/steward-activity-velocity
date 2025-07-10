@@ -12,8 +12,9 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.scheduler.ScheduledTask;
 import java.nio.file.Path;
 import java.sql.SQLException;
-import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.concurrent.TimeUnit;
 import lombok.Getter;
 import org.slf4j.Logger;
@@ -22,17 +23,27 @@ import org.slf4j.Logger;
  * @author MochaMousse
  */
 @Getter
-@Plugin(id = "steward-activity-velocity", name = "steward-activity-velocity", version = "2025.7.9")
+@Plugin(id = "steward-activity-velocity", name = "steward-activity-velocity", version = "2025.7.10")
 public class Main {
-  @Inject private Logger logger;
-  @Inject private ProxyServer server;
-  @Inject @DataDirectory // 告诉DI框架要注入的是哪个Path
+  public static final ZoneId SHANGHAI_ZONE = ZoneId.of("Asia/Shanghai");
+
+  @Inject
+  @SuppressWarnings("unused")
+  private Logger logger;
+
+  @Inject
+  @SuppressWarnings("unused")
+  private ProxyServer server;
+
+  @Inject
+  @DataDirectory
+  @SuppressWarnings("unused")
   private Path dataDirectory;
+
   private PluginConfig config;
   private ConfigManager configManager;
   private ReportManager reportManager;
   private DatabaseManager databaseManager;
-  // 用于保存定时任务的引用
   private ScheduledTask dailyReportTask;
   private ScheduledTask monthlyReportTask;
 
@@ -89,7 +100,7 @@ public class Main {
     CommandHandler commandHandler = new CommandHandler(this);
     // 注册
     commandManager.register(commandMeta, commandHandler.createBrigadierCommand());
-    logger.info("插件加载成功");
+    logger.info("插件已加载");
     reportManager.sendAdminNotification("[activity]::已就绪");
   }
 
@@ -97,6 +108,7 @@ public class Main {
   public void onProxyShutdown(ProxyShutdownEvent event) {
     // 在插件关闭时也取消任务
     cancelScheduledTasks();
+    logger.info("插件已卸载");
     reportManager.sendAdminNotification("[activity]::已关闭");
   }
 
@@ -133,7 +145,7 @@ public class Main {
             .buildTask(
                 this,
                 () -> {
-                  if (LocalDate.now().getDayOfMonth() == 1) {
+                  if (LocalDateTime.now(Main.SHANGHAI_ZONE).toLocalDate().getDayOfMonth() == 1) {
                     reportManager.generateAndDispatchMonthlyReport();
                   }
                 })
@@ -159,7 +171,7 @@ public class Main {
     server.getEventManager().unregisterListeners(this);
     // 关闭已经打开的资源
     if (databaseManager != null) {
-      logger.warn("正在关闭数据库连接...");
+      logger.warn("关闭数据库连接");
       databaseManager.close();
     }
   }
