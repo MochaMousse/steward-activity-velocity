@@ -23,7 +23,7 @@ import org.slf4j.Logger;
  * @author MochaMousse
  */
 @Getter
-@Plugin(id = "steward-activity-velocity", name = "steward-activity-velocity", version = "2025.7.10")
+@Plugin(id = "steward-activity-velocity", name = "steward-activity-velocity", version = "2025.7.12")
 public class Main {
   public static final ZoneId SHANGHAI_ZONE = ZoneId.of("Asia/Shanghai");
 
@@ -46,6 +46,8 @@ public class Main {
   private DatabaseManager databaseManager;
   private ScheduledTask dailyReportTask;
   private ScheduledTask monthlyReportTask;
+  private ScheduledTask serverStatusTask;
+  private ServerStatusMonitor serverStatusMonitor;
 
   @Subscribe
   public void onProxyInitialization(ProxyInitializeEvent event) {
@@ -80,6 +82,7 @@ public class Main {
     // 初始化报告管理器
     logger.info("初始化报告管理器");
     reportManager = new ReportManager(this);
+    serverStatusMonitor = new ServerStatusMonitor(this);
     // 启动定时任务
     scheduleTasks();
     // 注册事件监听器
@@ -119,7 +122,8 @@ public class Main {
     logger.info("配置文件已重新加载");
     // 重新初始化依赖配置的组件 (对于数据库和报告管理器通常是重新创建实例或者让它们内部有reload方法)
     // 这里采用重新创建实例的方式更安全
-    this.reportManager = new ReportManager(this);
+    reportManager = new ReportManager(this);
+    serverStatusMonitor = new ServerStatusMonitor(this);
     // 取消旧的定时任务并重新调度
     logger.info("正在重新调度报告任务");
     cancelScheduledTasks();
@@ -131,7 +135,7 @@ public class Main {
   private void scheduleTasks() {
     // 将ReportManager中的调度逻辑移到这里并保存任务引用
     LocalTime dailyReportTime = LocalTime.of(0, 5);
-    this.dailyReportTask =
+    dailyReportTask =
         server
             .getScheduler()
             .buildTask(this, () -> reportManager.generateAndDispatchDailyReport())
@@ -139,7 +143,7 @@ public class Main {
             .repeat(24, TimeUnit.HOURS)
             .schedule();
     LocalTime monthlyCheckTime = LocalTime.of(0, 10);
-    this.monthlyReportTask =
+    monthlyReportTask =
         server
             .getScheduler()
             .buildTask(
@@ -153,15 +157,27 @@ public class Main {
             .repeat(24, TimeUnit.HOURS)
             .schedule();
     logger.info("日报和月报任务已调度");
+    // 初始化所有服务器的初始状态
+    serverStatusTask =
+        server
+            .getScheduler()
+            .buildTask(this, scheduledTask -> serverStatusMonitor.pollServerStatus())
+            .repeat(30, TimeUnit.SECONDS)
+            .delay(10, TimeUnit.SECONDS)
+            .schedule();
+    logger.info("后端服务器状态任务已调度");
   }
 
-  /** NEW: 取消所有已调度的任务 */
+  /** 取消所有已调度的任务 */
   private void cancelScheduledTasks() {
     if (dailyReportTask != null) {
       dailyReportTask.cancel();
     }
     if (monthlyReportTask != null) {
       monthlyReportTask.cancel();
+    }
+    if (serverStatusTask != null) {
+      serverStatusTask.cancel();
     }
   }
 
