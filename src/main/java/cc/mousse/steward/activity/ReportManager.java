@@ -6,6 +6,7 @@ import com.velocitypowered.api.scheduler.Scheduler;
 import java.io.IOException;
 import java.time.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import okhttp3.*;
 import okhttp3.Request;
@@ -20,6 +21,7 @@ public final class ReportManager {
   private static final int MAX_MESSAGE_LENGTH = 1800;
 
   private static final String UNKNOWN_SERVER = "unknown";
+
   private final Gson gson;
   private final Main plugin;
   private final Logger logger;
@@ -181,7 +183,16 @@ public final class ReportManager {
         .toList();
   }
 
-  /** 负责处理单条会话记录的所有复杂计算和聚合逻辑。 */
+  /**
+   * 负责处理单条会话记录的所有复杂计算和聚合逻辑。 采用基于实时在线缓存的策略，确保数据处理的绝对准确性。
+   *
+   * @param session 从数据库获取的单条原始会话数据
+   * @param statsMap 用于聚合每个玩家统计数据的Map
+   * @param activeDaysMap 用于聚合月报活跃天数的Map
+   * @param isMonthly 是否为月报
+   * @param reportStart 报告的开始时间
+   * @param reportEnd 报告的结束时间
+   */
   private void processSingleSession(
       DatabaseManager.PlayerSessionData session,
       Map<String, PlayerStats> statsMap,
@@ -191,31 +202,86 @@ public final class ReportManager {
       LocalDateTime reportEnd) {
     PlayerStats playerStats =
         statsMap.computeIfAbsent(session.uuid(), k -> new PlayerStats(session.username()));
-    // 计算会话与报告周期的交集时长
+    long durationForThisReport = 0L;
     LocalDateTime sessionStart = session.loginTimestamp();
-    LocalDateTime sessionEnd =
-        (session.logoutTimestamp() == null) ? reportEnd : session.logoutTimestamp();
-    LocalDateTime effectiveStart = sessionStart.isAfter(reportStart) ? sessionStart : reportStart;
-    LocalDateTime effectiveEnd = sessionEnd.isBefore(reportEnd) ? sessionEnd : reportEnd;
-    long durationForThisReport =
-        Math.max(0, Duration.between(effectiveStart, effectiveEnd).toMillis());
-    // 聚合数据
-    playerStats.totalDurationMs += durationForThisReport;
-    playerStats.totalLoginCount++;
-    ServerStats serverStats =
-        playerStats.perServerStats.computeIfAbsent(
-            session.serverName() != null ? session.serverName() : UNKNOWN_SERVER,
-            k -> new ServerStats());
-    serverStats.durationMs += durationForThisReport;
-    serverStats.loginCount++;
-    // 如果是月报记录活跃天数
-    if (isMonthly) {
-      Set<LocalDate> playerActiveDays =
-          activeDaysMap.computeIfAbsent(session.uuid(), k -> new HashSet<>());
-      for (LocalDate date = effectiveStart.toLocalDate();
-          !date.isAfter(effectiveEnd.toLocalDate());
-          date = date.plusDays(1)) {
-        playerActiveDays.add(date);
+    LocalDateTime effectiveStart = null;
+    LocalDateTime effectiveEnd = null;
+    // --- 核心时长计算逻辑，按三层优先级处理 ---
+    // 优先级 1: 最可靠 -> 使用 logout_timestamp
+    if (session.logoutTimestamp() != null) {
+      effectiveStart = sessionStart;
+      effectiveEnd = session.logoutTimestamp();
+    }
+    // 优先级 2: 次可靠 -> 使用预先计算好的 duration_milliseconds
+    else if (session.durationMilliseconds() != null && session.durationMilliseconds() > 0) {
+      durationForThisReport = session.durationMilliseconds();
+      effectiveStart = sessionStart;
+      effectiveEnd = sessionStart.plus(durationForThisReport, java.time.temporal.ChronoUnit.MILLIS);
+    }
+    // 优先级 3: 开放会话 -> 查询实时在线缓存来判断其有效性
+    else {
+      UUID playerUuid;
+      try {
+        playerUuid = UUID.fromString(session.uuid());
+      } catch (IllegalArgumentException e) {
+        // 如果UUID格式不正确，则无法查询缓存，直接视为无效数据
+        playerUuid = null;
+      }
+      // 关键判断：玩家是否真的在服务器的在线缓存中
+      ConcurrentMap<UUID, Long> activeSessionIds =
+          plugin.getPlayerLoginListener().getActiveSessionIds();
+      if (playerUuid != null && activeSessionIds.containsKey(playerUuid)) {
+        // 玩家确实在线，将会话时长计算到报告结束时间点
+        effectiveStart = sessionStart;
+        effectiveEnd = reportEnd;
+      }
+      // 如果玩家不在缓存中 (else)，说明这是一条因服务器崩溃等原因遗留的“脏数据”。
+      // 我们不处理它，时长将保持为0，这被视为无效会话。
+    }
+    // --- 基于有效时间戳，计算会话与报告周期的交集时长 ---
+    if (durationForThisReport == 0L && effectiveStart != null && effectiveEnd != null) {
+      LocalDateTime intersectionStart =
+          effectiveStart.isAfter(reportStart) ? effectiveStart : reportStart;
+      LocalDateTime intersectionEnd = effectiveEnd.isBefore(reportEnd) ? effectiveEnd : reportEnd;
+
+      if (intersectionEnd.isAfter(intersectionStart)) {
+        durationForThisReport = Duration.between(intersectionStart, intersectionEnd).toMillis();
+      }
+    }
+    // --- 聚合所有统计数据 ---
+    if (durationForThisReport > 0) {
+      playerStats.totalDurationMs += durationForThisReport;
+      // 只有在处理一个有登出时间的会话，或者一个有预计算时长的会话时，才算作一次完整的登录。
+      // 对于仍在进行的会话，我们只累加时长，不增加登录次数，避免重复计算。
+      boolean validRecord =
+          session.logoutTimestamp() != null
+              || (session.durationMilliseconds() != null && session.durationMilliseconds() > 0);
+      if (validRecord) {
+        playerStats.totalLoginCount++;
+      }
+      ServerStats serverStats =
+          playerStats.perServerStats.computeIfAbsent(
+              session.serverName() != null ? session.serverName() : UNKNOWN_SERVER,
+              k -> new ServerStats());
+      serverStats.durationMs += durationForThisReport;
+
+      // 与登录次数同理，只为已完成的会话增加服务器登录次数
+      if (validRecord) {
+        serverStats.loginCount++;
+      }
+      // 如果是月报，并且我们有有效的起止时间，则记录活跃天数
+      if (isMonthly) {
+        Set<LocalDate> playerActiveDays =
+            activeDaysMap.computeIfAbsent(session.uuid(), k -> new HashSet<>());
+        LocalDateTime intersectionStart =
+            effectiveStart.isAfter(reportStart) ? effectiveStart : reportStart;
+        LocalDateTime intersectionEnd = effectiveEnd.isBefore(reportEnd) ? effectiveEnd : reportEnd;
+
+        for (LocalDate date = intersectionStart.toLocalDate();
+            !date.isAfter(intersectionEnd.toLocalDate());
+            date = date.plusDays(1)) {
+          playerActiveDays.add(date);
+        }
       }
     }
   }

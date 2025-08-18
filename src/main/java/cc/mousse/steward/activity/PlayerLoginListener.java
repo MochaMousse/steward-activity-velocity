@@ -16,11 +16,13 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
+import lombok.Getter;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
 /**
  * @author MochaMousse
  */
+@Getter
 public final class PlayerLoginListener {
   private final Main plugin;
   private final ReportManager reportManager;
@@ -28,24 +30,40 @@ public final class PlayerLoginListener {
   private final Map<String, String> serverNameMappings;
 
   /** 用于追踪当前在线玩家的会话信息 */
-  private final ConcurrentMap<UUID, Long> activeSessionIds = new ConcurrentHashMap<>();
+  private final ConcurrentMap<UUID, Long> activeSessionIds;
 
   /** 用于计算在线时长 */
-  private final ConcurrentMap<UUID, Instant> loginTimestamps = new ConcurrentHashMap<>();
+  private final ConcurrentMap<UUID, Instant> loginTimestamps;
 
   /** 用于缓存下线原因 */
   private final Map<UUID, String> kickReasonsCache = new ConcurrentHashMap<>();
 
   /** 用于实时追踪玩家所在的最后一个服务器 */
-  private final ConcurrentMap<UUID, RegisteredServer> lastKnownServerCache =
-      new ConcurrentHashMap<>();
+  private final ConcurrentMap<UUID, RegisteredServer> lastKnownServerCache;
 
-  public PlayerLoginListener(Main plugin) {
+  /**
+   * 插件重载时使用的构造函数，用于保留在线玩家的会话状态
+   *
+   * @param plugin 主插件实例
+   * @param activeSessionIds 从旧监听器实例传入的会话ID缓存
+   * @param loginTimestamps 从旧监听器实例传入的登录时间缓存
+   * @param lastKnownServerCache 从旧监听器实例传入的最后服务器缓存
+   */
+  public PlayerLoginListener(
+      Main plugin,
+      ConcurrentMap<UUID, Long> activeSessionIds,
+      ConcurrentMap<UUID, Instant> loginTimestamps,
+      ConcurrentMap<UUID, RegisteredServer> lastKnownServerCache) {
     this.plugin = plugin;
-    reportManager = plugin.getReportManager();
-    databaseManager = plugin.getDatabaseManager();
-    serverNameMappings = plugin.getConfig().getGoCqhttp().getServerNameMappings();
+    this.reportManager = plugin.getReportManager();
+    this.databaseManager = plugin.getDatabaseManager();
+    this.serverNameMappings = plugin.getConfig().getGoCqhttp().getServerNameMappings();
+    // 使用传入的缓存来初始化，而不是创建新的
+    this.activeSessionIds = activeSessionIds;
+    this.loginTimestamps = loginTimestamps;
+    this.lastKnownServerCache = lastKnownServerCache;
   }
+
 
   /** 玩家登录代理成功, 标记为“预备登录”状态 */
   @Subscribe
@@ -69,7 +87,12 @@ public final class PlayerLoginListener {
     }
     String uuid = playerUuid.toString();
     String username = player.getUsername();
-    String ipAddress = player.getRemoteAddress().getAddress().getHostAddress();
+    String ipAddress;
+    if (player.getRemoteAddress() != null && player.getRemoteAddress().getAddress() != null) {
+      ipAddress = player.getRemoteAddress().getAddress().getHostAddress();
+    } else {
+      ipAddress = "N/A";
+    }
     int protocolVersion = player.getProtocolVersion().getProtocol();
     LocalDateTime loginDateTime = LocalDateTime.ofInstant(loginInstant, Main.SHANGHAI_ZONE);
     String serverId = event.getServer().getServerInfo().getName();
@@ -170,12 +193,19 @@ public final class PlayerLoginListener {
                 serverPlayerCount = "-";
               }
               int totalPlayerCount = plugin.getServer().getPlayerCount();
+              String ipAddress;
+              if (player.getRemoteAddress() != null
+                  && player.getRemoteAddress().getAddress() != null) {
+                ipAddress = player.getRemoteAddress().getAddress().getHostAddress();
+              } else {
+                ipAddress = "N/A";
+              }
               String logoutMessage =
                   String.format(
                       "⬇️ 玩家 [%s] 已下线%s- IP地址: %s%s- 服务器: %s%s- 在线时长: %s%s- 离线原因: %s%s- 在线人数: %s / %d",
                       player.getUsername(),
                       "\n",
-                      player.getRemoteAddress().getAddress().getHostAddress(),
+                      ipAddress,
                       "\n",
                       serverDisplayName,
                       "\n",

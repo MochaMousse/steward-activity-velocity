@@ -6,7 +6,7 @@
 
     <groupId>cc.mousse.steward</groupId>
     <artifactId>steward-activity-velocity</artifactId>
-    <version>2025.7.12</version>
+    <version>2025.8.18</version>
     <packaging>jar</packaging>
 
     <name>steward-activity-velocity</name>

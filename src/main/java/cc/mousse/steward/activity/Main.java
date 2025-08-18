@@ -9,12 +9,17 @@ import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.scheduler.ScheduledTask;
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import lombok.Getter;
 import org.slf4j.Logger;
@@ -23,7 +28,7 @@ import org.slf4j.Logger;
  * @author MochaMousse
  */
 @Getter
-@Plugin(id = "steward-activity-velocity", name = "steward-activity-velocity", version = "2025.7.12")
+@Plugin(id = "steward-activity-velocity", name = "steward-activity-velocity", version = "2025.8.18")
 public class Main {
   public static final ZoneId SHANGHAI_ZONE = ZoneId.of("Asia/Shanghai");
 
@@ -48,6 +53,7 @@ public class Main {
   private ScheduledTask monthlyReportTask;
   private ScheduledTask serverStatusTask;
   private ServerStatusMonitor serverStatusMonitor;
+  private PlayerLoginListener playerLoginListener;
 
   @Subscribe
   public void onProxyInitialization(ProxyInitializeEvent event) {
@@ -83,11 +89,14 @@ public class Main {
     logger.info("初始化报告管理器");
     reportManager = new ReportManager(this);
     serverStatusMonitor = new ServerStatusMonitor(this);
+    playerLoginListener =
+        new PlayerLoginListener(
+            this, new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
     // 启动定时任务
     scheduleTasks();
     // 注册事件监听器
     logger.info("注册事件监听器");
-    server.getEventManager().register(this, new PlayerLoginListener(this));
+    server.getEventManager().register(this, playerLoginListener);
     // 注册命令
     logger.info("注册命令");
     // 获取CommandManager
@@ -117,18 +126,35 @@ public class Main {
 
   public void reload() {
     logger.info("开始重载插件");
+    // 1. 【新增】在销毁旧实例前，保存关键的会话缓存
+    ConcurrentMap<UUID, Long> preservedSessionIds = new ConcurrentHashMap<>();
+    ConcurrentMap<UUID, Instant> preservedLoginTimestamps = new ConcurrentHashMap<>();
+    ConcurrentMap<UUID, RegisteredServer> preservedLastServers = new ConcurrentHashMap<>();
+    if (this.playerLoginListener != null) {
+      preservedSessionIds = this.playerLoginListener.getActiveSessionIds();
+      preservedLoginTimestamps = this.playerLoginListener.getLoginTimestamps();
+      preservedLastServers = this.playerLoginListener.getLastKnownServerCache();
+      logger.info("已保留 {} 个在线玩家的会话状态。", preservedSessionIds.size());
+    }
+    // 取消旧的定时任务和监听器
+    cancelScheduledTasks();
+    server.getEventManager().unregisterListeners(this);
+    // 重新加载配置
     configManager.load();
     config = configManager.get();
     logger.info("配置文件已重新加载");
-    // 重新初始化依赖配置的组件 (对于数据库和报告管理器通常是重新创建实例或者让它们内部有reload方法)
-    // 这里采用重新创建实例的方式更安全
+    // 按照正确的顺序重新创建所有实例
     reportManager = new ReportManager(this);
     serverStatusMonitor = new ServerStatusMonitor(this);
-    // 取消旧的定时任务并重新调度
-    logger.info("正在重新调度报告任务");
-    cancelScheduledTasks();
+    playerLoginListener =
+        new PlayerLoginListener(
+            this, preservedSessionIds, preservedLoginTimestamps, preservedLastServers);
+    // 重新调度任务和注册监听器
+    logger.info("正在重新调度任务和注册监听器");
     scheduleTasks();
+    server.getEventManager().register(this, playerLoginListener);
     logger.info("插件重载完成！");
+    reportManager.sendAdminNotification("[activity]::已重载");
   }
 
   /** 封装的任务调度方法 */
