@@ -6,7 +6,6 @@ import com.velocitypowered.api.scheduler.Scheduler;
 import java.io.IOException;
 import java.time.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import okhttp3.*;
 import okhttp3.Request;
@@ -179,6 +178,7 @@ public final class ReportManager {
     }
     // 按总时长倒序排序并返回
     return statsMap.values().stream()
+        .filter(s -> s.totalDurationMs > 0 || s.totalLoginCount > 0)
         .sorted(Comparator.comparingLong(s -> -s.totalDurationMs))
         .toList();
   }
@@ -202,11 +202,10 @@ public final class ReportManager {
       LocalDateTime reportEnd) {
     PlayerStats playerStats =
         statsMap.computeIfAbsent(session.uuid(), k -> new PlayerStats(session.username()));
-    long durationForThisReport = 0L;
     LocalDateTime sessionStart = session.loginTimestamp();
     LocalDateTime effectiveStart = null;
     LocalDateTime effectiveEnd = null;
-    // --- 核心时长计算逻辑，按三层优先级处理 ---
+    // --- 【重构】第一步：仅确定有效的会话开始和结束时间 ---
     // 优先级 1: 最可靠 -> 使用 logout_timestamp
     if (session.logoutTimestamp() != null) {
       effectiveStart = sessionStart;
@@ -214,9 +213,9 @@ public final class ReportManager {
     }
     // 优先级 2: 次可靠 -> 使用预先计算好的 duration_milliseconds
     else if (session.durationMilliseconds() != null && session.durationMilliseconds() > 0) {
-      durationForThisReport = session.durationMilliseconds();
       effectiveStart = sessionStart;
-      effectiveEnd = sessionStart.plus(durationForThisReport, java.time.temporal.ChronoUnit.MILLIS);
+      effectiveEnd =
+          sessionStart.plus(session.durationMilliseconds(), java.time.temporal.ChronoUnit.MILLIS);
     }
     // 优先级 3: 开放会话 -> 查询实时在线缓存来判断其有效性
     else {
@@ -228,27 +227,27 @@ public final class ReportManager {
         playerUuid = null;
       }
       // 关键判断：玩家是否真的在服务器的在线缓存中
-      ConcurrentMap<UUID, Long> activeSessionIds =
-          plugin.getPlayerLoginListener().getActiveSessionIds();
-      if (playerUuid != null && activeSessionIds.containsKey(playerUuid)) {
+      if (playerUuid != null
+          && plugin.getPlayerLoginListener().getActiveSessionIds().containsKey(playerUuid)) {
         // 玩家确实在线，将会话时长计算到报告结束时间点
         effectiveStart = sessionStart;
         effectiveEnd = reportEnd;
       }
-      // 如果玩家不在缓存中 (else)，说明这是一条因服务器崩溃等原因遗留的“脏数据”。
-      // 我们不处理它，时长将保持为0，这被视为无效会话。
+      // 如果玩家不在缓存中说明这是一条因服务器崩溃等原因遗留的“脏数据”则不处理
     }
-    // --- 基于有效时间戳，计算会话与报告周期的交集时长 ---
-    if (durationForThisReport == 0L && effectiveStart != null && effectiveEnd != null) {
+    // 只要确定了有效时间就必须进行交集计算
+    long durationForThisReport = 0L;
+    if (effectiveStart != null && effectiveEnd != null) {
+      // 计算会话与报告周期的交集
       LocalDateTime intersectionStart =
           effectiveStart.isAfter(reportStart) ? effectiveStart : reportStart;
       LocalDateTime intersectionEnd = effectiveEnd.isBefore(reportEnd) ? effectiveEnd : reportEnd;
-
+      // 确保交集有效
       if (intersectionEnd.isAfter(intersectionStart)) {
         durationForThisReport = Duration.between(intersectionStart, intersectionEnd).toMillis();
       }
     }
-    // --- 聚合所有统计数据 ---
+    // 聚合所有统计数据
     if (durationForThisReport > 0) {
       playerStats.totalDurationMs += durationForThisReport;
       // 只有在处理一个有登出时间的会话，或者一个有预计算时长的会话时，才算作一次完整的登录。
@@ -264,23 +263,24 @@ public final class ReportManager {
               session.serverName() != null ? session.serverName() : UNKNOWN_SERVER,
               k -> new ServerStats());
       serverStats.durationMs += durationForThisReport;
-
       // 与登录次数同理，只为已完成的会话增加服务器登录次数
       if (validRecord) {
         serverStats.loginCount++;
       }
-      // 如果是月报，并且我们有有效的起止时间，则记录活跃天数
+      // 如果是月报，则记录活跃天数
       if (isMonthly) {
         Set<LocalDate> playerActiveDays =
             activeDaysMap.computeIfAbsent(session.uuid(), k -> new HashSet<>());
+        // 注意：活跃天数也应该基于交集来计算，以保证准确性
         LocalDateTime intersectionStart =
             effectiveStart.isAfter(reportStart) ? effectiveStart : reportStart;
         LocalDateTime intersectionEnd = effectiveEnd.isBefore(reportEnd) ? effectiveEnd : reportEnd;
-
-        for (LocalDate date = intersectionStart.toLocalDate();
-            !date.isAfter(intersectionEnd.toLocalDate());
-            date = date.plusDays(1)) {
-          playerActiveDays.add(date);
+        if (intersectionEnd.isAfter(intersectionStart)) {
+          for (LocalDate date = intersectionStart.toLocalDate();
+              !date.isAfter(intersectionEnd.toLocalDate());
+              date = date.plusDays(1)) {
+            playerActiveDays.add(date);
+          }
         }
       }
     }
