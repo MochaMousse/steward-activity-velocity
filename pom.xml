@@ -6,7 +6,7 @@
 
     <groupId>cc.mousse.steward</groupId>
     <artifactId>steward-activity-velocity</artifactId>
-    <version>2025.8.18</version>
+    <version>2025.11.30</version>
     <packaging>jar</packaging>
 
     <name>steward-activity-velocity</name>
@@ -209,7 +209,7 @@
         <dependency>
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
-            <version>9.0.0</version>
+            <version>9.3.0</version>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>

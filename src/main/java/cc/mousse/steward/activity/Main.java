@@ -28,7 +28,10 @@ import org.slf4j.Logger;
  * @author MochaMousse
  */
 @Getter
-@Plugin(id = "steward-activity-velocity", name = "steward-activity-velocity", version = "2025.8.18")
+@Plugin(
+    id = "steward-activity-velocity",
+    name = "steward-activity-velocity",
+    version = "2025.11.30")
 public class Main {
   public static final ZoneId SHANGHAI_ZONE = ZoneId.of("Asia/Shanghai");
 
@@ -91,7 +94,10 @@ public class Main {
     serverStatusMonitor = new ServerStatusMonitor(this);
     playerLoginListener =
         new PlayerLoginListener(
-            this, new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
+            this,
+            new ConcurrentHashMap<>(2),
+            new ConcurrentHashMap<>(2),
+            new ConcurrentHashMap<>(2));
     // 启动定时任务
     scheduleTasks();
     // 注册事件监听器
@@ -126,10 +132,10 @@ public class Main {
 
   public void reload() {
     logger.info("开始重载插件");
-    // 1. 【新增】在销毁旧实例前，保存关键的会话缓存
-    ConcurrentMap<UUID, Long> preservedSessionIds = new ConcurrentHashMap<>();
-    ConcurrentMap<UUID, Instant> preservedLoginTimestamps = new ConcurrentHashMap<>();
-    ConcurrentMap<UUID, RegisteredServer> preservedLastServers = new ConcurrentHashMap<>();
+    // 在销毁旧实例前保存关键的会话缓存
+    ConcurrentMap<UUID, Long> preservedSessionIds = new ConcurrentHashMap<>(8);
+    ConcurrentMap<UUID, Instant> preservedLoginTimestamps = new ConcurrentHashMap<>(8);
+    ConcurrentMap<UUID, RegisteredServer> preservedLastServers = new ConcurrentHashMap<>(8);
     if (this.playerLoginListener != null) {
       preservedSessionIds = this.playerLoginListener.getActiveSessionIds();
       preservedLoginTimestamps = this.playerLoginListener.getLoginTimestamps();

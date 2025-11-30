@@ -13,6 +13,7 @@ import org.slf4j.Logger;
  */
 public class ServerStatusMonitor {
   public enum ServerStatus {
+    /** 服务器状态 */
     ONLINE,
     OFFLINE,
     UNKNOWN
@@ -25,7 +26,7 @@ public class ServerStatusMonitor {
   private final ReportManager reportManager;
   private final Map<String, String> serverNameMappings;
 
-  // 使用ConcurrentHashMap来安全地在主线程和异步线程间共享状态
+  /** 使用ConcurrentHashMap来安全地在主线程和异步线程间共享状态 */
   private final ConcurrentMap<String, ServerStatus> serverStatusCache = new ConcurrentHashMap<>();
 
   public ServerStatusMonitor(Main plugin) {
